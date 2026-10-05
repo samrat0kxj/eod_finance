@@ -454,3 +454,99 @@ export function parseUIDAIReport(
 
   return { summary, records };
 }
+
+/**
+ * Combines two independently extracted UIDAI EOD reports into a single consolidated report.
+ * Merges enrolment records, sequences S.No, computes exact mathematical total payable amount,
+ * and tracks per-package breakdown.
+ */
+export function combineParsedReports(
+  report1: { summary: ReportSummary; records: EnrolmentRecord[] },
+  report2: { summary: ReportSummary; records: EnrolmentRecord[] }
+): { summary: ReportSummary; records: EnrolmentRecord[] } {
+  const taggedRecords1 = report1.records.map((r) => ({
+    ...r,
+    sourceFile: `UC: ${report1.summary.fileName}`,
+  }));
+
+  const taggedRecords2 = report2.records.map((r) => ({
+    ...r,
+    sourceFile: `ECMP: ${report2.summary.fileName}`,
+  }));
+
+  const allRecords = [...taggedRecords1, ...taggedRecords2].map((r, idx) => ({
+    ...r,
+    sNo: idx + 1,
+  }));
+
+  const totalAmountCharged =
+    Math.round((report1.summary.totalAmountCharged + report2.summary.totalAmountCharged) * 100) / 100;
+  const totalGstAmount =
+    Math.round(((report1.summary.totalGstAmount || 0) + (report2.summary.totalGstAmount || 0)) * 100) / 100;
+  const totalNewEnrolmentAmount =
+    Math.round(
+      ((report1.summary.totalNewEnrolmentAmount || 0) + (report2.summary.totalNewEnrolmentAmount || 0)) * 100
+    ) / 100;
+  const totalUpdateEnrolmentAmount =
+    Math.round(
+      ((report1.summary.totalUpdateEnrolmentAmount || 0) + (report2.summary.totalUpdateEnrolmentAmount || 0)) * 100
+    ) / 100;
+
+  const countNewEnrolment = report1.summary.countNewEnrolment + report2.summary.countNewEnrolment;
+  const countUpdate = report1.summary.countUpdate + report2.summary.countUpdate;
+  const countCompleted = report1.summary.countCompleted + report2.summary.countCompleted;
+  const countInProcess = report1.summary.countInProcess + report2.summary.countInProcess;
+  const countRejected = report1.summary.countRejected + report2.summary.countRejected;
+  const totalRecords = allRecords.length;
+
+  const combinedFormat =
+    report1.summary.format === report2.summary.format
+      ? `${report1.summary.format} (UC + ECMP Combined)`
+      : 'COMBINED (UC + ECMP)';
+
+  const mergedMetadata: ReportMetadata = {
+    ...report1.summary.metadata,
+    ...report2.summary.metadata,
+    reportDate:
+      report1.summary.metadata.reportDate === report2.summary.metadata.reportDate
+        ? report1.summary.metadata.reportDate
+        : [report1.summary.metadata.reportDate, report2.summary.metadata.reportDate].filter(Boolean).join(' & '),
+    operator: [report1.summary.metadata.operator, report2.summary.metadata.operator].filter(Boolean).join(' / '),
+    stationId: [report1.summary.metadata.stationId, report2.summary.metadata.stationId].filter(Boolean).join(' / '),
+  };
+
+  const summary: ReportSummary = {
+    totalRecords,
+    totalAmountCharged,
+    totalGstAmount,
+    totalNewEnrolmentAmount,
+    totalUpdateEnrolmentAmount,
+    countNewEnrolment,
+    countUpdate,
+    countCompleted,
+    countInProcess,
+    countRejected,
+    fileName: `UC (${report1.summary.fileName}) + ECMP (${report2.summary.fileName})`,
+    format: combinedFormat,
+    metadata: mergedMetadata,
+    extractionTimestamp: new Date().toISOString(),
+    isCombined: true,
+    packageBreakdown: [
+      {
+        packageName: `UC (${report1.summary.fileName})`,
+        recordCount: report1.summary.totalRecords,
+        totalAmount: report1.summary.totalAmountCharged,
+        format: report1.summary.format,
+      },
+      {
+        packageName: `ECMP (${report2.summary.fileName})`,
+        recordCount: report2.summary.totalRecords,
+        totalAmount: report2.summary.totalAmountCharged,
+        format: report2.summary.format,
+      },
+    ],
+  };
+
+  return { summary, records: allRecords };
+}
+

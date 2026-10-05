@@ -8,6 +8,7 @@ import {
   extractZipInMemory,
   parseUIDAIReport,
   createSampleZipInMemory,
+  combineParsedReports,
 } from './server/parser.ts';
 import {
   authenticate,
@@ -102,62 +103,167 @@ app.post('/api/auth/logout', requireAuth, (req: Request, res: Response) => {
 });
 
 // -------------------------------------------------------------
-// 2. File Upload & In-Memory Extraction Pipeline
+// 2. File Upload & In-Memory Extraction Pipeline (Single or Dual Packages)
 // -------------------------------------------------------------
 app.post(
   '/api/upload-eod',
   requireAuth,
-  upload.single('file'),
+  upload.any(),
   async (req: Request, res: Response) => {
-    let zipBuffer: Buffer | null = req.file?.buffer || null;
-    const password = (req.body.password || '').toString();
-
-    if (!zipBuffer) {
-      return res.status(400).json({ error: 'No ZIP file was uploaded.' });
+    const rawFiles = (req.files as Express.Multer.File[]) || [];
+    if (rawFiles.length === 0) {
+      return res.status(400).json({ error: 'No ZIP file was uploaded. Please upload at least one EOD package (UC or ECMP).' });
     }
 
-    const originalName = req.file?.originalname || 'package.zip';
-    if (!originalName.toLowerCase().endsWith('.zip')) {
-      return res.status(400).json({ error: 'Invalid file format. Please upload a .zip file.' });
+    // Identify UC and ECMP files from explicit fieldnames or fallbacks
+    let fileUc: Express.Multer.File | undefined = rawFiles.find((f) => f.fieldname === 'uc');
+    let fileEcmp: Express.Multer.File | undefined = rawFiles.find((f) => f.fieldname === 'ecmp');
+
+    let pwdUc = (req.body.passwordUc || '').toString().trim();
+    let pwdEcmp = (req.body.passwordEcmp || '').toString().trim();
+
+    // Fallback detection if generic fieldnames were used (e.g. 'file', 'file1', 'file2')
+    if (!fileUc && !fileEcmp) {
+      const f1 = rawFiles.find((f) => f.fieldname === 'file' || f.fieldname === 'file1') || rawFiles[0];
+      const f2 = rawFiles.find((f) => f.fieldname === 'file2') || (rawFiles.length > 1 && rawFiles[1] !== f1 ? rawFiles[1] : null);
+
+      if (f2) {
+        // Two files passed
+        fileUc = f1;
+        fileEcmp = f2;
+        if (!pwdUc) pwdUc = (req.body.passwordUc || req.body.password || req.body.password1 || '').toString().trim();
+        if (!pwdEcmp) pwdEcmp = (req.body.passwordEcmp || req.body.password2 || req.body.password || '').toString().trim();
+      } else {
+        // Single file passed: determine if it's ECMP or UC based on passwords/fields
+        if (req.body.passwordEcmp && !req.body.passwordUc) {
+          fileEcmp = f1;
+          pwdEcmp = req.body.passwordEcmp.toString().trim();
+        } else {
+          fileUc = f1;
+          pwdUc = (req.body.passwordUc || req.body.password || req.body.password1 || '').toString().trim();
+        }
+      }
+    } else {
+      if (fileUc && !pwdUc) {
+        pwdUc = (req.body.password || req.body.password1 || '').toString().trim();
+      }
+      if (fileEcmp && !pwdEcmp) {
+        pwdEcmp = (req.body.password2 || req.body.password || '').toString().trim();
+      }
+    }
+
+    if (!fileUc && !fileEcmp) {
+      return res.status(400).json({ error: 'Please upload at least one valid ZIP file (UC or ECMP).' });
     }
 
     try {
-      // Step A: Extract in-memory with password decryption
-      const extracted = await extractZipInMemory(zipBuffer, password);
+      let parsedUc: { summary: any; records: any } | null = null;
+      let parsedEcmp: { summary: any; records: any } | null = null;
 
-      // Step B: Parse and validate against UIDAI schema in RAM
-      const { summary, records } = parseUIDAIReport(
-        extracted.content,
-        originalName,
-        extracted.format
-      );
-
-      // Step C: Immediate memory clearing of raw file buffers
-      zipBuffer = null;
-      if (req.file) {
-        delete (req.file as any).buffer;
+      // Step A: Decrypt and parse UC if provided
+      if (fileUc) {
+        if (!fileUc.originalname.toLowerCase().endsWith('.zip')) {
+          return res.status(400).json({ error: `UC file "${fileUc.originalname}" is not a valid .zip archive.` });
+        }
+        try {
+          const extracted1 = await extractZipInMemory(fileUc.buffer, pwdUc);
+          parsedUc = parseUIDAIReport(extracted1.content, fileUc.originalname, extracted1.format);
+        } catch (err: any) {
+          throw new Error(`UC Package (${fileUc.originalname}): ${err.message || 'Decryption/parsing failed'}`);
+        }
       }
 
-      // Step D: Store in temporary session cache (RAM only, 30 min TTL)
+      // Step B: Decrypt and parse ECMP if provided
+      if (fileEcmp) {
+        if (!fileEcmp.originalname.toLowerCase().endsWith('.zip')) {
+          return res.status(400).json({ error: `ECMP file "${fileEcmp.originalname}" is not a valid .zip archive.` });
+        }
+        try {
+          const extracted2 = await extractZipInMemory(fileEcmp.buffer, pwdEcmp);
+          parsedEcmp = parseUIDAIReport(extracted2.content, fileEcmp.originalname, extracted2.format);
+        } catch (err: any) {
+          throw new Error(`ECMP Package (${fileEcmp.originalname}): ${err.message || 'Decryption/parsing failed'}`);
+        }
+      }
+
+      let finalSummary: any;
+      let finalRecords: any[];
+
+      // Step C: Formulate consolidated or individual report
+      if (parsedUc && parsedEcmp) {
+        // Both UC and ECMP provided: combine them into unified ledger
+        const combined = combineParsedReports(parsedUc, parsedEcmp);
+        finalSummary = combined.summary;
+        finalRecords = combined.records;
+      } else if (parsedUc) {
+        // Only UC provided
+        const taggedRecords = parsedUc.records.map((r: any) => ({
+          ...r,
+          sourceFile: `UC: ${parsedUc!.summary.fileName}`,
+        }));
+        finalSummary = {
+          ...parsedUc.summary,
+          isCombined: false,
+          packageBreakdown: [
+            {
+              packageName: `UC (${parsedUc.summary.fileName})`,
+              recordCount: parsedUc.summary.totalRecords,
+              totalAmount: parsedUc.summary.totalAmountCharged,
+              format: parsedUc.summary.format,
+            },
+          ],
+        };
+        finalRecords = taggedRecords;
+      } else if (parsedEcmp) {
+        // Only ECMP provided
+        const taggedRecords = parsedEcmp.records.map((r: any) => ({
+          ...r,
+          sourceFile: `ECMP: ${parsedEcmp!.summary.fileName}`,
+        }));
+        finalSummary = {
+          ...parsedEcmp.summary,
+          isCombined: false,
+          packageBreakdown: [
+            {
+              packageName: `ECMP (${parsedEcmp.summary.fileName})`,
+              recordCount: parsedEcmp.summary.totalRecords,
+              totalAmount: parsedEcmp.summary.totalAmountCharged,
+              format: parsedEcmp.summary.format,
+            },
+          ],
+        };
+        finalRecords = taggedRecords;
+      } else {
+        return res.status(400).json({ error: 'No valid reports could be parsed.' });
+      }
+
+      // Step D: Immediate memory clearing of raw file buffers
+      rawFiles.forEach((f) => {
+        delete (f as any).buffer;
+      });
+
+      // Step E: Store in temporary session cache (RAM only, 30 min TTL)
       const sessionId = 'sess_' + crypto.randomBytes(16).toString('hex');
       const currentUser = (req as any).user;
 
       memoryReportsCache.set(sessionId, {
         sessionId,
         userId: currentUser.userId,
-        summary,
-        records,
+        summary: finalSummary,
+        records: finalRecords,
         createdAt: Date.now(),
       });
 
       return res.json({
         sessionId,
-        summary,
-        records,
+        summary: finalSummary,
+        records: finalRecords,
       });
     } catch (err: any) {
-      // Clean up references
-      zipBuffer = null;
+      // Wipe buffers
+      rawFiles.forEach((f) => {
+        delete (f as any).buffer;
+      });
       return res.status(422).json({
         error: err.message || 'Failed to decrypt and process UIDAI EOD package.',
       });

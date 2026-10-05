@@ -269,7 +269,21 @@ export const DataGrid: React.FC<DataGridProps> = ({ records }) => {
                     className="hover:bg-indigo-50/30 transition-colors odd:bg-white even:bg-slate-50/40"
                   >
                     <td className="py-2 px-3 text-slate-500 font-mono tabular-nums">
-                      {r.sNo}
+                      <div className="flex items-center gap-1.5">
+                        <span>{r.sNo}</span>
+                        {r.sourceFile && (
+                          <span
+                            title={r.sourceFile}
+                            className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold tracking-wider ${
+                              r.sourceFile.startsWith('UC') || r.sourceFile.includes('Package 1')
+                                ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                                : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            }`}
+                          >
+                            {r.sourceFile.startsWith('UC') || r.sourceFile.includes('Package 1') ? 'UC' : 'ECMP'}
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     <td className="py-2 px-3 font-mono font-medium text-slate-900 whitespace-nowrap tracking-tight select-all">

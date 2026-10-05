@@ -32,6 +32,7 @@ export interface EnrolmentRecord {
   totalAmountCharged: number;
   rejectReason?: string;
   processingState?: string;
+  sourceFile?: string;
 }
 
 export interface ReportMetadata {
@@ -42,6 +43,13 @@ export interface ReportMetadata {
   stationId?: string;
   clientVersion?: string;
   dateRange?: string;
+}
+
+export interface PackageBreakdownItem {
+  packageName: string;
+  recordCount: number;
+  totalAmount: number;
+  format: string;
 }
 
 export interface ReportSummary {
@@ -56,9 +64,11 @@ export interface ReportSummary {
   countInProcess: number;
   countRejected: number;
   fileName: string;
-  format: 'HTML' | 'CSV';
+  format: 'HTML' | 'CSV' | string;
   metadata: ReportMetadata;
   extractionTimestamp: string;
+  isCombined?: boolean;
+  packageBreakdown?: PackageBreakdownItem[];
 }
 
 export interface ParsedReportResponse {

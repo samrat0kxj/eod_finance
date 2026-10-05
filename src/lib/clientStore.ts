@@ -12,6 +12,7 @@ import type {
 import {
   extractZipInMemory,
   parseUIDAIReport,
+  combineParsedReports,
 } from './clientParser.ts';
 import { SAMPLE_HTML_REPORT, SAMPLE_CSV_REPORT } from '../sampleData.ts';
 
@@ -454,23 +455,98 @@ export const clientStore = {
     }
   },
 
-  // EOD Extraction and Session Pipeline
-  async uploadEodZip(file: File, password: string): Promise<ParsedReportResponse> {
-    if (!file.name.toLowerCase().endsWith('.zip')) {
-      throw new Error('Invalid file format. Please upload a .zip file.');
+  // EOD Extraction and Session Pipeline (UC & ECMP Single or Dual Package Reconciler)
+  async uploadEodZip(
+    fileUc?: File | null,
+    passwordUc?: string,
+    fileEcmp?: File | null,
+    passwordEcmp?: string
+  ): Promise<ParsedReportResponse> {
+    if (!fileUc && !fileEcmp) {
+      throw new Error('Please select at least one EOD package (UC or ECMP).');
     }
 
-    // Step A: Extract in-memory using clientParser
-    const extracted = await extractZipInMemory(file, password);
+    let parsedUc: { summary: ReportSummary; records: EnrolmentRecord[] } | null = null;
+    let parsedEcmp: { summary: ReportSummary; records: EnrolmentRecord[] } | null = null;
 
-    // Step B: Parse and validate against UIDAI schema in RAM
-    const { summary, records } = parseUIDAIReport(
-      extracted.content,
-      file.name,
-      extracted.format
-    );
+    // Step A: Extract UC in-memory using clientParser if provided
+    if (fileUc) {
+      if (!fileUc.name.toLowerCase().endsWith('.zip')) {
+        throw new Error(`UC File "${fileUc.name}" is not a valid .zip archive.`);
+      }
+      try {
+        const extracted1 = await extractZipInMemory(fileUc, passwordUc);
+        parsedUc = parseUIDAIReport(extracted1.content, fileUc.name, extracted1.format);
+      } catch (err: any) {
+        throw new Error(`UC Package (${fileUc.name}): ${err.message || 'Decryption/parsing failed'}`);
+      }
+    }
 
-    // Step C: Store in temporary session cache (RAM only, 30 min TTL)
+    // Step B: Extract ECMP in-memory using clientParser if provided
+    if (fileEcmp) {
+      if (!fileEcmp.name.toLowerCase().endsWith('.zip')) {
+        throw new Error(`ECMP File "${fileEcmp.name}" is not a valid .zip archive.`);
+      }
+      try {
+        const extracted2 = await extractZipInMemory(fileEcmp, passwordEcmp);
+        parsedEcmp = parseUIDAIReport(extracted2.content, fileEcmp.name, extracted2.format);
+      } catch (err: any) {
+        throw new Error(`ECMP Package (${fileEcmp.name}): ${err.message || 'Decryption/parsing failed'}`);
+      }
+    }
+
+    let finalSummary: ReportSummary;
+    let finalRecords: EnrolmentRecord[];
+
+    // Step C: Formulate consolidated or individual report
+    if (parsedUc && parsedEcmp) {
+      // Both packages provided: combine them into single consolidated ledger
+      const combined = combineParsedReports(parsedUc, parsedEcmp);
+      finalSummary = combined.summary;
+      finalRecords = combined.records;
+    } else if (parsedUc) {
+      // Only UC package provided
+      const taggedRecords = parsedUc.records.map((r) => ({
+        ...r,
+        sourceFile: `UC: ${parsedUc!.summary.fileName}`,
+      }));
+      finalSummary = {
+        ...parsedUc.summary,
+        isCombined: false,
+        packageBreakdown: [
+          {
+            packageName: `UC (${parsedUc.summary.fileName})`,
+            recordCount: parsedUc.summary.totalRecords,
+            totalAmount: parsedUc.summary.totalAmountCharged,
+            format: parsedUc.summary.format,
+          },
+        ],
+      };
+      finalRecords = taggedRecords;
+    } else if (parsedEcmp) {
+      // Only ECMP package provided
+      const taggedRecords = parsedEcmp.records.map((r) => ({
+        ...r,
+        sourceFile: `ECMP: ${parsedEcmp!.summary.fileName}`,
+      }));
+      finalSummary = {
+        ...parsedEcmp.summary,
+        isCombined: false,
+        packageBreakdown: [
+          {
+            packageName: `ECMP (${parsedEcmp.summary.fileName})`,
+            recordCount: parsedEcmp.summary.totalRecords,
+            totalAmount: parsedEcmp.summary.totalAmountCharged,
+            format: parsedEcmp.summary.format,
+          },
+        ],
+      };
+      finalRecords = taggedRecords;
+    } else {
+      throw new Error('No valid reports could be parsed.');
+    }
+
+    // Step D: Store in temporary session cache (RAM only, 30 min TTL)
     const sessionId = 'sess_' + randomId();
     let currentUserId = 'operator';
     try {
@@ -483,15 +559,15 @@ export const clientStore = {
     memoryReportsCache.set(sessionId, {
       sessionId,
       userId: currentUserId,
-      summary,
-      records,
+      summary: finalSummary,
+      records: finalRecords,
       createdAt: Date.now(),
     });
 
     return {
       sessionId,
-      summary,
-      records,
+      summary: finalSummary,
+      records: finalRecords,
     };
   },
 

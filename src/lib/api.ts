@@ -211,16 +211,36 @@ export const api = {
     }
   },
 
-  // EOD Processing
-  async uploadEodZip(file: File, password: string): Promise<ParsedReportResponse> {
+  // EOD Processing (Single UC, Single ECMP, or Dual UC+ECMP Package)
+  async uploadEodZip(
+    fileUc?: File | null,
+    passwordUc?: string,
+    fileEcmp?: File | null,
+    passwordEcmp?: string
+  ): Promise<ParsedReportResponse> {
     if (isClientModeActive()) {
-      return clientStore.uploadEodZip(file, password);
+      return clientStore.uploadEodZip(fileUc, passwordUc, fileEcmp, passwordEcmp);
     }
 
     try {
       const formData = new FormData();
-      formData.append('file', file);
-      formData.append('password', password);
+      if (fileUc) {
+        formData.append('uc', fileUc);
+        formData.append('passwordUc', passwordUc || '');
+        formData.append('file', fileUc); // fallback
+        formData.append('password', passwordUc || '');
+      }
+      if (fileEcmp) {
+        formData.append('ecmp', fileEcmp);
+        formData.append('passwordEcmp', passwordEcmp || '');
+        if (!fileUc) {
+          formData.append('file', fileEcmp); // fallback if only ECMP
+          formData.append('password', passwordEcmp || '');
+        } else {
+          formData.append('file2', fileEcmp); // fallback if both
+          formData.append('password2', passwordEcmp || '');
+        }
+      }
 
       const token = getStoredToken();
       const headers: Record<string, string> = {};
@@ -237,7 +257,7 @@ export const api = {
       const contentType = response.headers.get('content-type') || '';
       if (response.status === 404 || contentType.includes('text/html')) {
         setClientModeActive(true);
-        return clientStore.uploadEodZip(file, password);
+        return clientStore.uploadEodZip(fileUc, passwordUc, fileEcmp, passwordEcmp);
       }
 
       if (!response.ok) {
@@ -262,7 +282,7 @@ export const api = {
         msg.includes('failed to fetch')
       ) {
         setClientModeActive(true);
-        return clientStore.uploadEodZip(file, password);
+        return clientStore.uploadEodZip(fileUc, passwordUc, fileEcmp, passwordEcmp);
       }
       throw err;
     }
