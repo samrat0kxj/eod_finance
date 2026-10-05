@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Download, FileCode, FileSpreadsheet, Lock, CheckCircle2, ShieldCheck, Key } from 'lucide-react';
+import { generateSampleZipBlob } from '../lib/clientParser.ts';
 
 interface SampleGeneratorModalProps {
   isOpen: boolean;
@@ -20,10 +21,16 @@ export const SampleGeneratorModal: React.FC<SampleGeneratorModalProps> = ({
   const handleDownload = async (format: 'html' | 'csv') => {
     setDownloadingFormat(format);
     try {
-      const response = await fetch(`/api/sample-zip?format=${format}&password=${encodeURIComponent(samplePassword)}`);
-      if (!response.ok) throw new Error('Download failed');
+      let blob: Blob;
+      try {
+        const response = await fetch(`/api/sample-zip?format=${format}&password=${encodeURIComponent(samplePassword)}`);
+        if (!response.ok) throw new Error('API download unavailable');
+        blob = await response.blob();
+      } catch {
+        // Fallback: Generate sample zip directly in browser (e.g. Netlify static hosting)
+        blob = await generateSampleZipBlob(format, samplePassword);
+      }
 
-      const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -37,7 +44,7 @@ export const SampleGeneratorModal: React.FC<SampleGeneratorModalProps> = ({
         onSelectSamplePassword(samplePassword);
       }
     } catch (err: any) {
-      alert('Could not download sample ZIP: ' + err.message);
+      alert('Could not generate sample ZIP: ' + err.message);
     } finally {
       setDownloadingFormat(null);
     }
