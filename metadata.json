@@ -1,0 +1,6 @@
+{
+  "name": "UIDAI EOD Financial Package Processor",
+  "description": "Secure in-memory processing, password decryption, validation, and financial reconciliation for UIDAI-style EOD enrolment status reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
